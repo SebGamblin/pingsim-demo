@@ -436,8 +436,14 @@ function saveHash() {
   }, 150);
 }
 
+// Service shown when the page is opened without a shared link: a hammer (tomahawk) on the forehand diagonal, strong
+// sidespin (the Magnus force bends the flight by about 1 m sideways), received by the opponent's racket near the
+// far end of the table, which sends it back. The presets still start from DEFAULTS.
+const START = { d: 1.6, lat: -0.3, h: 12, toss: 30, fall: 8, speed: 13, el: -4, az: 56, tilt: -18, yaw: -16,
+  wall: 1, wx: 1.9, wy: 0.86, wh: 17, wtilt: 0, wyaw: -20 };
+
 function loadHash() {
-  if (!location.hash.length) return;
+  if (!location.hash.length) { Object.assign(params, START); return; }
   const q = new URLSearchParams(location.hash.slice(1));
   for (const s of SLIDERS) {
     if (q.has(s.id)) { const v = parseFloat(q.get(s.id)); if (Number.isFinite(v)) params[s.id] = clamp(v, s.min, s.max); }
