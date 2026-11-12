@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PingSim — Méthodes de calcul</title>
+<meta name="description" content="Équations, composantes prises en compte, limites et pistes de précision du simulateur de tennis de table PingSim.">
+<link rel="stylesheet" href="vendor/katex/katex.min.css">
+<link rel="stylesheet" href="methodes.css">
+<script defer src="vendor/katex/katex.min.js"></script>
+<script defer src="vendor/katex/contrib/auto-render.min.js"></script>
+<script type="module" src="methodes.js"></script>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <a class="back" href="./">← Retour au Service Lab</a>
+  <div class="eyebrow">PingSim · Comprendre le calcul</div>
+  <h1>Méthodes de calcul</h1>
+  <p class="lead">Ce que PingSim calcule, avec quelles équations, ce qu'il ne calcule pas encore, et ce qu'on peut faire pour qu'il devienne plus précis. Les valeurs numériques citées sont celles du code actuel.</p>
+</header>
+
+<nav class="toc" aria-label="Sommaire">
+  <h2>Sommaire</h2>
+  <ol>
+    <li><a href="#vue">Vue d'ensemble</a></li>
+    <li><a href="#balle">La balle</a></li>
+    <li><a href="#vol">Le vol</a></li>
+    <li><a href="#numerique">Intégration numérique</a></li>
+    <li><a href="#table">Rebond sur la table</a></li>
+    <li><a href="#raquette">Contact avec la raquette</a></li>
+    <li><a href="#frappe">De vos réglages à la frappe</a></li>
+    <li><a href="#evenements">Filet et raquette adverse</a></li>
+    <li><a href="#verdict">Légalité et indicateurs</a></li>
+    <li><a href="#inclus">Pris en compte ou non</a></li>
+    <li><a href="#limites">Limites des calculs</a></li>
+    <li><a href="#precision">Gagner en précision</a></li>
+    <li><a href="#lire">Pour aller plus loin</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<section id="vue">
+  <h2><span class="n">1</span>Vue d'ensemble</h2>
+  <p class="sub">Un simulateur ne dessine pas une trajectoire : il résout les équations de la mécanique, pas à pas.</p>
+  <p>Une balle est décrite par <b>neuf nombres</b> : sa position (3), sa vitesse (3) et sa rotation sur elle-même (3). Tout service suit la même chaîne de six étapes.</p>
+  <ol class="flow">
+    <li><b>Réglages</b><span>Point de frappe, vitesse et direction de la raquette, angle de la face, revêtement, lancer.</span></li>
+    <li><b>Géométrie de la frappe</b><span>Ces réglages deviennent des vecteurs : vitesse de la raquette, normale de sa face, vitesse de la balle qui tombe.</span></li>
+    <li><b>Contact</b><span>Le choc dure 1 à 2 ms. Il est calculé pas à pas (2 µs) avec un modèle de revêtement.</span></li>
+    <li><b>Vol</b><span>Gravité, traînée, effet Magnus et freinage du spin, intégrés avec un pas de temps adaptatif.</span></li>
+    <li><b>Événements</b><span>Rebond sur la table, filet, sol, raquette adverse : repérés avec précision puis traités.</span></li>
+    <li><b>Verdict</b><span>Légalité du service, spin décomposé, garde au filet, rebonds.</span></li>
+  </ol>
+  <div class="box idea"><b>Repère et signes</b>
+    <ul>
+      <li><b>x</b> le long de la table (le filet est en x = 0, le serveur est du côté x &lt; 0), <b>y</b> en travers (y &gt; 0 = côté gauche du serveur), <b>z</b> vers le haut. Unités du Système International.</li>
+      <li>Le spin est un vecteur \(\boldsymbol\omega\) (règle de la main droite). Pour une balle qui va vers +x : <b>topspin</b> = \(\boldsymbol\omega\) selon +y, <b>backspin</b> = selon −y, <b>effet latéral</b> = selon z (positif : la balle dévie vers la gauche du serveur).</li>
+      <li>Les spins sont affichés en tours par seconde : \(\omega/2\pi\). Les angles sont en degrés dans l'interface.</li>
+    </ul>
+  </div>
+  <div class="box where"><b>Dans le code</b>
+    <p>Noyau C++ : <code>core/src/serve.cpp</code> (chaîne complète), <code>racket.cpp</code> (contact), <code>simulate.cpp</code> (vol et événements), <code>bounce.cpp</code> (table).</p>
+  </div>
+</section>
+
+<section id="balle">
+  <h2><span class="n">2</span>La balle</h2>
+  <p class="sub">Une sphère creuse, de rayon et de masse réglementaires.</p>
+  <p>La balle est une <b>coque sphérique mince</b>. Sa résistance à la mise en rotation (moment d'inertie) vaut :</p>
+  \[ I=\tfrac23\,m\,r^2\approx 7{,}2\times10^{-7}\ \mathrm{kg\cdot m^2},\qquad A=\pi r^2\approx 1{,}26\times10^{-3}\ \mathrm{m^2} \]
+  <div class="tablewrap"><table>
+    <thead><tr><th>Grandeur</th><th>Symbole</th><th class="num">Valeur</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Rayon</td><td>\(r\)</td><td class="num">20 mm</td><td>Règlement (balle de 40 mm)</td></tr>
+      <tr><td>Masse</td><td>\(m\)</td><td class="num">2,7 g</td><td>Règlement</td></tr>
+      <tr><td>Poids</td><td>\(mg\)</td><td class="num">0,0265 N</td><td>Calculé avec \(g = 9{,}81\ \mathrm{m/s^2}\)</td></tr>
+    </tbody>
+  </table></div>
+  <div class="box idea"><b>Pourquoi une coque ?</b><p>Une balle pleine et une balle creuse ne tournent pas aussi facilement. Pour une même masse, une coque a un moment d'inertie plus grand (2/3 au lieu de 2/5 de \(m r^2\)) : elle prend moins de spin pour un même coup. Ce facteur 2/3 revient dans presque toutes les formules de rebond.</p></div>
+</section>
+
+<section id="vol">
+  <h2><span class="n">3</span>Le vol de la balle</h2>
+  <p class="sub">Quatre effets agissent sur une balle en l'air : le poids, la résistance de l'air, la force de Magnus et le freinage de sa rotation.</p>
+  <p>La loi de Newton \(m\,\dot{\mathbf v}=\sum\mathbf F\) donne l'équation du mouvement. Avec \(\mathbf v_r=\mathbf v-\mathbf v_{\text{vent}}\) la vitesse par rapport à l'air :</p>
+  \[ m\,\dot{\mathbf v}\;=\;m\,\mathbf g\;-\;\tfrac12\rho A\,C_D\,\lVert\mathbf v_r\rVert\,\mathbf v_r\;+\;\tfrac12\rho A\,C_L\,\lVert\mathbf v_r\rVert^{2}\,\big(\hat{\boldsymbol\omega}\times\hat{\mathbf v}_r\big) \]
+  \[ \dot{\boldsymbol\omega}\;=\;-\,\frac{\rho\,r^{5}\,C_M}{2\,I}\;\lVert\boldsymbol\omega\rVert\,\boldsymbol\omega \]
+  <p>Un chapeau désigne un vecteur de longueur 1 : \(\hat{\mathbf v}=\mathbf v/\lVert\mathbf v\rVert\).</p>
+
+  <h3>3.1 La traînée : l'air freine la balle</h3>
+  <p>L'air s'oppose au mouvement avec une force proportionnelle à la <b>surface</b> de la balle \(A\), à la <b>densité</b> de l'air \(\rho\) et au <b>carré de la vitesse</b>. Le coefficient de traînée \(C_D\) résume la forme de l'écoulement.</p>
+  \[ \mathbf F_D=-\tfrac12\rho A\,C_D\,\lVert\mathbf v_r\rVert\,\mathbf v_r,\qquad \mathrm{Re}=\frac{\rho\,\lVert\mathbf v_r\rVert\,2r}{\mu_{\text{air}}} \]
+  <p>Valeur utilisée : \(C_D=0{,}40\) (constante dans la plage de Reynolds du tennis de table, \(10^4\) à \(7\times10^4\)). À 15 m/s, la traînée vaut 0,068 N, soit 2,6 fois le poids de la balle : elle ralentit de 25 m/s² environ.</p>
+  <p>Quand la traînée équilibre le poids, la balle cesse d'accélérer en chute libre. Cette <b>vitesse limite</b> sert de test au noyau :</p>
+  \[ v_{\text{lim}}=\sqrt{\frac{2\,m\,g}{\rho\,A\,C_D}}\approx 9{,}4\ \mathrm{m/s} \]
+
+  <h3>3.2 L'effet Magnus : le spin courbe la trajectoire</h3>
+  <p>Une balle qui tourne entraîne l'air autour d'elle : d'un côté l'air va plus vite, de l'autre plus lentement. La différence de pression pousse la balle <b>perpendiculairement</b> à sa vitesse et à son axe de rotation.</p>
+  \[ \mathbf F_M=\tfrac12\rho A\,C_L(S)\,\lVert\mathbf v_r\rVert^{2}\,\big(\hat{\boldsymbol\omega}\times\hat{\mathbf v}_r\big),\qquad S=\frac{r\,\lVert\boldsymbol\omega\rVert}{\lVert\mathbf v_r\rVert} \]
+  <p>Le paramètre \(S\) compare la vitesse de la surface de la balle (\(r\omega\)) à sa vitesse d'avancement. Le coefficient \(C_L\) augmente avec \(S\) puis sature : le noyau utilise la forme \(C_L=S/(2S+1)\) (Watts et Ferrer), interpolée entre dix points (\(S\) de 0 à 3).</p>
+  <p><b>Sens de la force.</b> Pour une balle qui va vers +x avec du topspin (\(\boldsymbol\omega\) selon +y), le produit vectoriel \(\hat{\mathbf y}\times\hat{\mathbf x}=-\hat{\mathbf z}\) pointe vers le bas : le topspin <b>fait plonger</b> la balle. Le backspin inverse le signe et <b>la soutient</b>. Un spin vertical (effet latéral) donne une force horizontale : la balle <b>dévie</b>. Un spin dirigé selon la vitesse (tire-bouchon) ne produit aucune force.</p>
+  <p>À 15 m/s avec 100 tours/s, \(S\approx0{,}84\), \(C_L\approx0{,}31\) et la force de Magnus atteint 0,053 N, soit <b>deux fois le poids</b> de la balle. Essayez d'autres valeurs :</p>
+
+  <div class="demo" id="demo-magnus">
+    <h4>Calculateur : poids, traînée et Magnus</h4>
+    <p class="hint">Mêmes formules et mêmes tables que le noyau C++ (écart inférieur à 0,0003 % sur les cas vérifiés).</p>
+    <div class="grid">
+      <div class="ctl"><label for="m-v">Vitesse de la balle <output id="m-v-o"></output></label><input id="m-v" type="range" min="2" max="30" step="0.5" value="15"></div>
+      <div class="ctl"><label for="m-s">Spin <output id="m-s-o"></output></label><input id="m-s" type="range" min="0" max="150" step="1" value="100"></div>
+    </div>
+    <div class="res">
+      <div><small>Paramètre de spin S</small><strong id="m-S"></strong></div>
+      <div><small>Coefficient C<sub>L</sub></small><strong id="m-CL"></strong></div>
+      <div><small>Accélération due à Magnus</small><strong id="m-aM"></strong></div>
+      <div><small>Vitesse limite en chute</small><strong id="m-vl"></strong></div>
+    </div>
+    <div class="bars" id="m-bars"></div>
+    <p class="verdict" id="m-verdict"></p>
+  </div>
+
+  <h3>3.3 Le spin ralentit lui aussi</h3>
+  <p>L'air freine la rotation de la balle par un couple opposé à \(\boldsymbol\omega\). Avec \(C_M=0{,}03\), un spin de 100 tours/s perd environ <b>5 % par seconde</b> : sur un service, la perte est faible, mais elle compte pour un échange long.</p>
+
+  <h3>3.4 L'air</h3>
+  <p>La densité de l'air dépend de la température \(T\), de la pression \(p\) et de l'humidité relative \(H\) (air humide = plus léger) :</p>
+  \[ \rho=\frac{p-p_v}{R_d\,T}+\frac{p_v}{R_v\,T},\quad p_v=H\,p_{\text{sat}},\quad p_{\text{sat}}=610{,}94\,\exp\!\Big(\frac{17{,}625\,T_{^\circ\mathrm C}}{T_{^\circ\mathrm C}+243{,}04}\Big) \]
+  <p>avec \(R_d=287{,}058\) et \(R_v=461{,}495\ \mathrm{J/(kg\cdot K)}\). Valeur par défaut : 20 °C, 1 013 hPa, 50 % d'humidité, soit \(\rho\approx1{,}199\ \mathrm{kg/m^3}\). Le noyau accepte aussi un vent, mais l'interface ne le propose pas encore.</p>
+
+  <div class="tablewrap"><table>
+    <thead><tr><th>Paramètre</th><th class="num">Valeur</th><th>Statut</th></tr></thead>
+    <tbody>
+      <tr><td>Traînée \(C_D\)</td><td class="num">0,40 (constant)</td><td><span class="tag part">non mesuré</span></td></tr>
+      <tr><td>Portance \(C_L(S)=S/(2S+1)\)</td><td class="num">0 à 0,33</td><td><span class="tag part">formule du baseball</span></td></tr>
+      <tr><td>Couple de freinage \(C_M\)</td><td class="num">0,03</td><td><span class="tag part">non mesuré</span></td></tr>
+      <tr><td>Viscosité de l'air \(\mu_{\text{air}}\)</td><td class="num">1,81×10⁻⁵ Pa·s</td><td><span class="tag ok">valeur standard</span></td></tr>
+    </tbody>
+  </table></div>
+  <div class="box where"><b>Dans le code</b><p><code>core/src/simulate.cpp</code>, fonction <code>deriv</code> ; <code>core/src/aero.cpp</code> (tables et densité de l'air).</p></div>
+  <div class="box limit"><b>Limites</b><p>\(C_D\), \(C_L\) et \(C_M\) sont des valeurs plausibles, pas des mesures. Le vrai \(C_D\) dépend du nombre de Reynolds et du spin ; la formule de \(C_L\) vient d'une balle de baseball ; le couple de freinage est supposé quadratique en \(\omega\).</p></div>
+</section>
+
+<section id="numerique">
+  <h2><span class="n">4</span>Intégration numérique</h2>
+  <p class="sub">Comment on passe d'une équation à une trajectoire.</p>
+  <p>Les équations du vol donnent la <b>pente</b> de chaque grandeur à chaque instant. Pour obtenir la trajectoire, on avance par petits pas : la position suivante vaut la position actuelle plus la pente multipliée par le pas de temps. Les bons schémas évaluent la pente plusieurs fois dans un même pas pour limiter l'erreur.</p>
+  <p>PingSim utilise le schéma <b>de Dormand et Prince d'ordre 5(4)</b> : il calcule la solution de deux manières, d'ordre 5 et d'ordre 4, et leur écart estime l'erreur du pas. Avec \(e_i\) l'écart sur la composante \(i\) :</p>
+  \[ \varepsilon=\max_i\frac{|e_i|}{a_{\text{tol}}+r_{\text{tol}}\,\max(|y_i|,|y_i^{\text{nouveau}}|)},\qquad h\leftarrow h\cdot\min\!\big(5,\ \max(0{,}2,\ 0{,}9\,\varepsilon^{-1/5})\big) \]
+  <p>Si \(\varepsilon>1\) le pas est refusé et recommencé plus petit. Sinon il est accepté et le pas suivant s'adapte : grand quand la balle vole tranquillement, petit après un choc. Tolérances : \(r_{\text{tol}}=10^{-8}\), \(a_{\text{tol}}=10^{-9}\), pas maximal 0,1 s.</p>
+  <h3>Repérer un événement avec précision</h3>
+  <p>Un rebond ou un passage au filet se produit <b>entre deux pas</b>. Quand une fonction de contact \(g\) (par exemple la hauteur du centre de la balle moins celle de la table) change de signe, on cherche l'instant exact où \(g=0\) par la méthode d'<b>Illinois</b> (une variante de la fausse position), jusqu'à \(|g|<10^{-10}\ \mathrm{m}\). Le choc est ensuite appliqué à cet instant, puis le vol reprend.</p>
+  <div class="box idea"><b>Mesuré</b><p>Une trajectoire de service complète demande environ 15 pas et 14 à 17 µs. Comparée à un calcul beaucoup plus serré (\(r_{\text{tol}}=10^{-12}\)), l'erreur sur la position d'un rebond est d'au plus 3,4×10⁻⁷ m (0,3 µm) : <b>l'erreur numérique est très inférieure aux incertitudes du modèle physique</b>.</p></div>
+  <div class="box where"><b>Dans le code</b><p><code>core/src/simulate.cpp</code> : <code>dp_step</code>, <code>find_root</code> et la boucle de <code>simulate</code>. Test de convergence dans <code>tests/test_core.cpp</code>.</p></div>
+</section>
+
+<section id="table">
+  <h2><span class="n">5</span>Rebond sur la table</h2>
+  <p class="sub">Un choc très court, avec de l'élasticité et du frottement.</p>
+  <div class="box idea"><b>L'idée</b><p>On ne simule pas la déformation de la balle : on calcule directement la <b>vitesse juste après le choc</b> à partir de la vitesse juste avant, grâce à deux impulsions (une force intégrée sur la durée du choc) : une impulsion normale (la table repousse la balle) et une impulsion tangentielle (le frottement).</p></div>
+  <p>Notons \(\mathbf n\) la normale de la table (vers le haut) et \(\mathbf r_c=-r\,\mathbf n\) le vecteur du centre de la balle au point de contact.</p>
+  <p><b>Direction normale.</b> L'élasticité est donnée par le coefficient de restitution \(e\) :</p>
+  \[ J_n=m\,(1+e)\,(-\mathbf v\!\cdot\!\mathbf n),\qquad e=0{,}87 \]
+  <p>La valeur 0,87 vient du règlement : une balle lâchée de 30,5 cm doit remonter à 23 cm, donc \(e=\sqrt{23/30{,}5}\).</p>
+  <p><b>Direction tangentielle.</b> Le point de la balle qui touche la table a une vitesse qui mélange le glissement de la balle et sa rotation :</p>
+  \[ \mathbf v_c=\mathbf v+\boldsymbol\omega\times\mathbf r_c,\qquad \mathbf u=\mathbf v_c-(\mathbf v_c\!\cdot\!\mathbf n)\,\mathbf n\quad(\text{vitesse de glissement}) \]
+  <p>Deux cas se présentent. Si le frottement est assez fort, il <b>arrête le glissement</b> : la balle roule au décollage. Sinon elle <b>glisse</b> et le frottement est limité par la loi de Coulomb. Avec \(k=1/m+r^2/I\) (la variation de vitesse du point de contact pour une impulsion tangentielle de 1) :</p>
+  \[ J_{\text{stick}}=\frac{(1+e_t)\,\lVert\mathbf u\rVert}{k},\qquad J_t=\begin{cases}J_{\text{stick}}&\text{si }J_{\text{stick}}\le\mu J_n\ \ (\text{adhérence})\\[2pt] \mu\,J_n&\text{sinon}\ \ (\text{glissement})\end{cases}\qquad(\text{dirigée à l'opposé de }\mathbf u) \]
+  <p>Les vitesses après le choc sont alors :</p>
+  \[ \mathbf v'=\mathbf v+\frac{J_n\,\mathbf n+\mathbf J_t}{m},\qquad \boldsymbol\omega'=\boldsymbol\omega+\frac{\mathbf r_c\times\big(J_n\,\mathbf n+\mathbf J_t\big)}{I} \]
+  <p>Valeurs : \(\mu=0{,}25\) et \(e_t=0\) (pas d'élasticité dans la phase d'adhérence).</p>
+  <h3>Pourquoi un backspin peut faire reculer la balle</h3>
+  <p>Avec beaucoup de backspin, la balle glisse vers l'avant sur la table pendant tout le choc. Le frottement agit alors vers l'arrière et vaut au plus \(\mu J_n\) :</p>
+  \[ \Delta v_x=-\mu\,(1+e)\,|v_z| \]
+  <p>La balle repart donc <b>en arrière</b> si \(v_x<\mu(1+e)\,|v_z|\approx0{,}47\,|v_z|\). Pour qu'une balle revienne vers le filet, il faut qu'elle arrive très lentement horizontalement et assez vite verticalement : c'est pourquoi les services « qui reviennent » ont une trajectoire haute.</p>
+
+  <div class="demo" id="demo-bounce">
+    <h4>Calculateur : rebond sur la table</h4>
+    <p class="hint">Dans le plan vertical. Réglages d'origine : une balle qui arrive lentement avec du backspin. Faites varier le frottement \(\mu\) ou le spin pour voir le sens du rebond changer.</p>
+    <div class="grid">
+      <div class="ctl"><label for="b-vx"><span>Vitesse horizontale (vers +x)</span> <output id="b-vx-o"></output></label><input id="b-vx" type="range" min="0" max="15" step="0.1" value="1"></div>
+      <div class="ctl"><label for="b-vz"><span>Vitesse verticale (vers la table)</span> <output id="b-vz-o"></output></label><input id="b-vz" type="range" min="0.5" max="8" step="0.1" value="3"></div>
+      <div class="ctl"><label for="b-s"><span>Spin (+ topspin, − backspin)</span> <output id="b-s-o"></output></label><input id="b-s" type="range" min="-150" max="150" step="1" value="-60"></div>
+      <div class="ctl"><label for="b-mu"><span>Frottement \(\mu\)</span> <output id="b-mu-o"></output></label><input id="b-mu" type="range" min="0.05" max="0.6" step="0.01" value="0.25"></div>
+      <div class="ctl"><label for="b-e"><span>Restitution \(e\)</span> <output id="b-e-o"></output></label><input id="b-e" type="range" min="0.7" max="0.95" step="0.01" value="0.87"></div>
+    </div>
+    <svg class="fig" id="b-fig" viewBox="0 0 640 210" role="img" aria-label="Vitesses avant et après le rebond"></svg>
+    <div class="res">
+      <div><small>Vitesse horizontale après</small><strong id="b-vx2"></strong></div>
+      <div><small>Vitesse verticale après</small><strong id="b-vz2"></strong></div>
+      <div><small>Spin après</small><strong id="b-s2"></strong></div>
+      <div><small>Régime du contact</small><strong id="b-reg"></strong></div>
+    </div>
+    <p class="verdict" id="b-verdict"></p>
+  </div>
+  <div class="box where"><b>Dans le code</b><p><code>core/src/bounce.cpp</code>, fonction <code>apply_impact</code> (réutilisée pour la raquette). Elle est vérifiée par un test sur 20 000 cas aléatoires : l'énergie ne croît jamais.</p></div>
+  <div class="box limit"><b>Limites</b><p>\(e\) et \(\mu\) sont constants alors que, sur une vraie table, ils varient avec la vitesse et l'angle d'impact. L'élasticité tangentielle \(e_t\) est nulle. Les arêtes de la table ne sont pas modélisées : une balle dont le centre sort du plateau ne rebondit pas.</p></div>
+</section>
+
+<section id="raquette">
+  <h2><span class="n">6</span>Contact avec la raquette et son revêtement</h2>
+  <p class="sub">La partie la plus fine du modèle : une milliseconde de physique, calculée en détail.</p>
+  <div class="box idea"><b>L'idée</b><p>Un revêtement est une <b>éponge</b> (un ressort amorti) recouverte d'une <b>feuille</b> qui accroche. Dans la direction perpendiculaire à la face, l'éponge se comprime puis repousse la balle. Dans le plan de la face, la feuille <b>entraîne</b> la balle jusqu'à ce que l'adhérence cède : c'est ce qui crée le spin. On ne résout pas l'impulsion d'un coup : on calcule le choc <b>pas à pas</b>, toutes les 2 µs.</p></div>
+
+  <figure>
+    <svg class="fig" viewBox="0 0 680 235" role="img" aria-label="Schéma du modèle de contact">
+      <defs><marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+      <g style="color:var(--text)">
+        <!-- normal direction -->
+        <text x="30" y="22" style="font-weight:700">Direction normale</text>
+        <circle cx="170" cy="75" r="34" fill="#f6f2e8" stroke="#888"/>
+        <path d="M170 109 V125" stroke="currentColor" fill="none" marker-end="url(#ar)"/>
+        <rect x="60" y="125" width="220" height="45" fill="#e6b46a" opacity=".85"/>
+        <rect x="60" y="170" width="220" height="30" fill="#c9955c"/>
+        <line x1="60" y1="125" x2="280" y2="125" stroke="#d63a2f" stroke-width="4"/>
+        <path d="M95 128 L95 134 L83 140 L107 150 L83 160 L107 168 L95 172" stroke="#222" stroke-width="2" fill="none"/>
+        <rect x="185" y="140" width="22" height="20" fill="none" stroke="#222" stroke-width="2"/><line x1="196" y1="128" x2="196" y2="150" stroke="#222" stroke-width="2"/><line x1="196" y1="160" x2="196" y2="172" stroke="#222" stroke-width="2"/>
+        <text x="114" y="154" style="fill:#222;font-size:11px">ressort</text>
+        <text x="212" y="154" style="fill:#222;font-size:11px">amortisseur</text>
+        <text x="60" y="218" class="muted">F<tspan dy="3" font-size="9">n</tspan><tspan dy="-3"> = k</tspan><tspan dy="3" font-size="9">n</tspan><tspan dy="-3"> δ</tspan><tspan dy="-4" font-size="9">3/2</tspan><tspan dy="4"> (1 + 3/2 · α δ̇)</tspan></text>
+        <text x="60" y="233" class="muted" style="font-size:11px">+ fond de bois : ressort raide si δ &gt; 6 mm</text>
+        <!-- tangential plane -->
+        <text x="380" y="22" style="font-weight:700">Plan de la face (spin)</text>
+        <circle cx="500" cy="75" r="34" fill="#f6f2e8" stroke="#888"/>
+        <path d="M470 75 H420" stroke="currentColor" fill="none" marker-end="url(#ar)"/>
+        <line x1="380" y1="125" x2="640" y2="125" stroke="#d63a2f" stroke-width="4"/>
+        <rect x="380" y="125" width="260" height="75" fill="#e6b46a" opacity=".85"/>
+        <line x1="400" y1="140" x2="400" y2="168" stroke="#222" stroke-width="4"/>
+        <path d="M400 154 H420 L428 142 L440 166 L452 142 L464 166 L476 142 L488 166 L496 154 H516" stroke="#222" stroke-width="2" fill="none"/>
+        <rect x="516" y="140" width="52" height="28" rx="4" fill="#9aa4b2" stroke="#222" stroke-width="2"/>
+        <text x="520" y="158" fill="#111" style="fill:#111;font-size:11px">patin μ F<tspan dy="3" font-size="9">n</tspan></text>
+        <text x="410" y="188" style="fill:#222;font-size:11px">ressort de cisaillement k<tspan dy="3" font-size="9">t</tspan></text>
+        <text x="380" y="218" class="muted">F<tspan dy="3" font-size="9">t</tspan><tspan dy="-3"> ≤ μ F</tspan><tspan dy="3" font-size="9">n</tspan><tspan dy="-3"> : au-delà, le patin glisse</tspan></text>
+      </g>
+    </svg>
+    <figcaption>Le modèle de contact : à gauche la compression de l'éponge, à droite le cisaillement de la feuille et la limite d'adhérence.</figcaption>
+  </figure>
+
+  <h3>6.1 Direction normale : l'éponge</h3>
+  <p>Notons \(\delta\) l'enfoncement de la balle dans le revêtement et \(\dot\delta\) sa vitesse. La force de l'éponge est un contact de <b>Hunt et Crossley</b> :</p>
+  \[ F_n=k_n\,\delta^{3/2}\Big(1+\tfrac32\,\alpha\,\dot\delta\Big)\ +\ k_b\,(\delta-\delta_{\text{lim}})_+,\qquad F_n\ge0 \]
+  <p>Le premier terme est un ressort non linéaire (\(\delta^{3/2}\), comme pour une sphère qui s'écrase) ; le facteur \(1+\tfrac32\alpha\dot\delta\) fait perdre de l'énergie à l'aller et la restitue moins au retour, ce qui règle l'<b>élasticité du revêtement</b> (plus \(\alpha\) est grand, plus la raquette « amortit »). Le dernier terme représente le bois sous l'éponge : au-delà de \(\delta_{\text{lim}}=6\) mm, un ressort très raide (\(k_b=10^7\) N/m) prend le relais.</p>
+  <h3>6.2 Plan de la face : la feuille</h3>
+  <p>La vitesse du point de contact par rapport à la raquette est la vitesse de glissement \(\mathbf s\). Un <b>ressort de cisaillement</b> \(k_t\) s'étire de \(\dot{\mathbf z}=\mathbf s\) et pousse la balle de \(\mathbf F_s=-k_t\,\mathbf z\). En série, un <b>patin de Coulomb</b> limite cette force : si \(\lVert\mathbf F_s\rVert>\mu F_n\), le patin glisse et on ramène la force sur la limite. Un amortisseur parallèle (taux \(\zeta_t=0{,}3\)) dissipe l'énergie de cisaillement.</p>
+  \[ \lVert\mathbf F_t\rVert\le\mu\,F_n,\qquad m\,\dot{\mathbf v}=F_n\,\mathbf n+\mathbf F_t,\qquad I\,\dot{\boldsymbol\omega}=\mathbf r_c\times\mathbf F_t,\qquad M\,\dot{\mathbf v}_R=-F_n\,\mathbf n \]
+  <p>La raquette (masse effective \(M=0{,}45\) kg : lame et main) réagit seulement dans la direction de sa normale. Le choc se termine quand \(\delta\) redevient nul. Chaque opération du calcul ne peut que <b>dissiper</b> de l'énergie : un test le vérifie sur 400 chocs aléatoires.</p>
+
+  <h3>6.3 Pourquoi le spin est plafonné</h3>
+  <p>Le frottement ne peut pas dépasser \(\mu F_n\). Le spin gagné est donc limité par l'impulsion normale \(J_n=m(1+e)\,v_{\text{n,rel}}\), où \(v_{\text{n,rel}}\) est la vitesse relative de la balle et de la raquette <b>perpendiculairement à la face</b> :</p>
+  \[ \Delta\omega\;\le\;\frac{r\,\mu\,J_n}{I}\;=\;\frac{3\,\mu\,(1+e)}{2}\,\frac{v_{\text{n,rel}}}{r} \]
+  <p>Exemple : avec \(\mu=1\), \(e=0{,}9\) et \(v_{\text{n,rel}}=2\) m/s, \(\Delta\omega\le285\) rad/s, soit 45 tours/s. Autrement dit, <b>pour beaucoup de spin, il faut une frappe qui pousse sur la balle</b> (donc qui l'accélère), pas seulement qui la frotte. C'est un résultat du modèle, qui explique pourquoi un fort spin va souvent avec une balle rapide.</p>
+
+  <h3>6.4 Les cinq revêtements</h3>
+  <p>Chaque revêtement est un jeu de quatre nombres. Ils décrivent la <b>raideur</b> de l'éponge, sa <b>perte d'énergie</b>, l'<b>adhérence</b> de la feuille et la <b>souplesse de cisaillement</b>.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Revêtement</th><th class="num">\(k_n\) (N/m<sup>3/2</sup>)</th><th class="num">\(\alpha\) (s/m)</th><th class="num">\(\mu\)</th><th class="num">\(k_t\) (N/m)</th><th>Effet recherché</th></tr></thead>
+    <tbody>
+      <tr><td>Lisse mou</td><td class="num">1,6×10⁵</td><td class="num">0,010</td><td class="num">1,00</td><td class="num">6×10³</td><td>beaucoup d'adhérence, contact long</td></tr>
+      <tr><td>Lisse dur</td><td class="num">3,0×10⁵</td><td class="num">0,012</td><td class="num">0,90</td><td class="num">1,2×10⁴</td><td>contact plus bref, plus rapide</td></tr>
+      <tr><td>Picots courts</td><td class="num">2,6×10⁵</td><td class="num">0,012</td><td class="num">0,65</td><td class="num">4×10³</td><td>moins d'adhérence</td></tr>
+      <tr><td>Picots longs</td><td class="num">1,2×10⁵</td><td class="num">0,018</td><td class="num">0,40</td><td class="num">1,5×10³</td><td>peu de spin créé, spin reçu conservé</td></tr>
+      <tr><td>Anti-spin</td><td class="num">2,0×10⁵</td><td class="num">0,025</td><td class="num">0,12</td><td class="num">1×10⁴</td><td>surface glissante, balle « morte »</td></tr>
+    </tbody>
+  </table></div>
+  <p>Ces valeurs donnent des ordres de grandeur corrects : contact de 1,2 à 1,9 ms, restitution raquette-balle de 0,79 à 0,90, force de pic de 30 à 80 N. Les différences entre revêtements sont celles attendues, et des tests les vérifient : le spin créé en brossant décroît de lisse mou à anti-spin ; un spin reçu est largement conservé par l'anti-spin et les picots longs.</p>
+  <div class="box where"><b>Dans le code</b><p><code>core/src/racket.cpp</code> : <code>racket_impact</code> et <code>rubber_preset</code>. Pas de temps vérifié : le spin final change de moins de 0,02 % entre 2 µs et 0,25 µs.</p></div>
+  <div class="box limit"><b>Limites</b><p>Les quatre nombres par revêtement sont des estimations, <b>pas des mesures</b>. Les picots ne sont pas modélisés individuellement : leur effet est résumé par ces quatre nombres. Le contact se fait au centre de la lame, la raquette garde sa vitesse pendant le choc (sauf le long de sa normale) et ne vibre pas.</p></div>
+</section>
+
+<section id="frappe">
+  <h2><span class="n">7</span>De vos réglages à la frappe</h2>
+  <p class="sub">Comment les curseurs et les sphères deviennent des vecteurs.</p>
+  <ul>
+    <li><b>Vitesse de la raquette</b> : \(s\) (curseur « vitesse »), dirigée selon l'élévation \(\varepsilon\) et l'azimut \(\psi_s\) du geste :</li>
+  </ul>
+  \[ \mathbf v_R=s\,\big(\cos\varepsilon\cos\psi_s,\ \cos\varepsilon\sin\psi_s,\ \sin\varepsilon\big) \]
+  <ul>
+    <li><b>Face de la raquette</b> : sa normale est donnée par l'ouverture \(\theta\) (0° = verticale, 90° = horizontale, face vers le haut) et l'orientation latérale \(\psi\) :</li>
+  </ul>
+  \[ \mathbf n=\big(\cos\theta\cos\psi,\ \cos\theta\sin\psi,\ \sin\theta\big) \]
+  <ul>
+    <li><b>Balle avant la frappe</b> : elle tombe à partir du repos, de la hauteur de chute \(h_c\) : \(\mathbf v_{\text{in}}=\big(0,\,0,\,-\sqrt{2\,g\,h_c}\big)\). Plus elle tombe, plus elle arrive vite.</li>
+    <li><b>Vitesse relative</b> : \(\mathbf v_{\text{rel}}=\mathbf v_{\text{in}}-\mathbf v_R\). Sa composante le long de \(\mathbf n\) (normale) règle la force du choc ; sa composante dans le plan de la face (tangentielle) règle le spin créé. Si la balle ne s'approche pas de la face (\(\mathbf v_{\text{rel}}\!\cdot\!\mathbf n\ge0\)), il n'y a pas de contact.</li>
+  </ul>
+  <p>Les <b>sphères d'orientation</b> règlent deux angles à la fois (par exemple ouverture et orientation latérale) : elles représentent la direction \(\mathbf d=(\cos v\cos h,\ \cos v\sin h,\ \sin v)\) vue de derrière le serveur. La raquette qui reçoit utilise la même représentation avec une normale tournée vers le serveur : \(\mathbf n_w=(-\cos\theta\cos\psi,\ \cos\theta\sin\psi,\ \sin\theta)\).</p>
+  <div class="box idea"><b>Droitier et gaucher</b><p>Le calcul ne dépend pas de la main : il ne voit que le mouvement de la raquette. « Gaucher » inverse gauche et droite (miroir) sur la position latérale, la direction du geste et l'orientation de la face. L'inclinaison dessinée de la raquette (35°, manche en bas à gauche pour un droitier) est <b>purement visuelle</b>.</p></div>
+  <div class="box where"><b>Dans le code</b><p><code>core/src/serve.cpp</code>, début de <code>evaluate_serve</code> ; <code>web/app.js</code> pour les sphères.</p></div>
+</section>
+
+<section id="evenements">
+  <h2><span class="n">8</span>Filet, sol et raquette adverse</h2>
+  <p class="sub">Les rencontres de la balle avec le décor, détectées comme des événements.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Événement</th><th>Condition</th><th>Effet</th></tr></thead>
+    <tbody>
+      <tr><td>Rebond sur la table</td><td>\(z=0{,}76+r\) avec le centre au-dessus du plateau (2,74 × 1,525 m) et \(v_z&lt;0\)</td><td>impulsion de rebond (section 5)</td></tr>
+      <tr><td>Filet</td><td>le centre traverse le plan \(x=0\), le bas de la balle est sous le haut du filet (15,25 cm) et le haut de la balle au-dessus de la table, dans la largeur du filet</td><td>faute (fin de trajectoire)</td></tr>
+      <tr><td>Balle au-dessus du filet</td><td>même traversée, bas de la balle au-dessus du haut du filet</td><td>on note la garde au filet</td></tr>
+      <tr><td>Sol</td><td>\(z=r\)</td><td>fin de trajectoire</td></tr>
+      <tr><td>Raquette adverse</td><td>distance signée à la face \(g=(\mathbf p-\mathbf c)\!\cdot\!\mathbf n-r\) devient négative, centre de la balle dans l'ellipse de la lame (15 × 16 cm, élargie de 0,7 rayon)</td><td>contact (section 6) avec la raquette immobile, puis le vol continue</td></tr>
+    </tbody>
+  </table></div>
+  <p>La raquette adverse ne change <b>jamais</b> la légalité du service : la classification se fait sur un vol sans elle, puis un second vol, avec la raquette, sert à l'affichage et au détail du retour.</p>
+  <div class="box limit"><b>Limites</b><p>Le filet est un plan : pas de rebond sur la bande, pas de balle qui roule sur le filet, pas de « let ». La raquette adverse est parfaitement immobile : elle ne représente pas un vrai geste de retour. Un impact sur l'arête de la table n'existe pas.</p></div>
+</section>
+
+<section id="verdict">
+  <h2><span class="n">9</span>Légalité du service et indicateurs</h2>
+  <p class="sub">Ce que le programme vérifie, et comment sont calculés les nombres affichés.</p>
+  <p>Un service est déclaré valide si toutes ces conditions sont réunies :</p>
+  <ol>
+    <li>la raquette rencontre la balle ;</li>
+    <li>le lancer fait au moins 16 cm ;</li>
+    <li>la frappe a lieu derrière la ligne de fond (\(x\le-1{,}37\) m) et au-dessus du niveau de la table ;</li>
+    <li>le premier rebond est dans la moitié du serveur (\(x&lt;0\)), sans toucher le filet ;</li>
+    <li>le deuxième rebond est dans la moitié du receveur, dans les limites de la table.</li>
+  </ol>
+  <p><b>Spin décomposé.</b> Avec \(\hat{\mathbf d}\) la direction horizontale de la balle au départ et \(\mathbf a=\hat{\mathbf z}\times\hat{\mathbf d}\) l'axe de topspin :</p>
+  \[ \text{topspin}=\frac{\boldsymbol\omega\!\cdot\!\mathbf a}{2\pi},\qquad \text{effet latéral}=\frac{\omega_z}{2\pi},\qquad \text{tire-bouchon}=\frac{\boldsymbol\omega\!\cdot\!\hat{\mathbf d}}{2\pi}\qquad(\text{tours par seconde}) \]
+  <p><b>Garde au filet</b> : hauteur du bas de la balle au-dessus du haut du filet, quand elle le traverse. <b>Service court</b> : la balle fait un troisième rebond sur la table, donc deux rebonds du côté du receveur.</p>
+  <div class="box limit"><b>Limites</b><p>Les règles sont simplifiées : le lancer est jugé sur sa seule hauteur (pas sur la verticalité ni l'ouverture de la main), un filet touché est une faute sans « let ».</p></div>
+</section>
+
+<section id="inclus">
+  <h2><span class="n">10</span>Ce qui est pris en compte, ou non</h2>
+  <p class="sub">Vue d'ensemble honnête des composantes du modèle.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Composante</th><th>État</th><th>Commentaire</th></tr></thead>
+    <tbody>
+      <tr><td>Gravité, traînée, effet Magnus, freinage du spin</td><td><span class="tag ok">modélisé</span></td><td>coefficients non mesurés</td></tr>
+      <tr><td>Densité de l'air (température, pression, humidité)</td><td><span class="tag ok">modélisé</span></td><td>réglable dans le noyau, fixe dans l'interface</td></tr>
+      <tr><td>Vent</td><td><span class="tag part">partiel</span></td><td>présent dans le noyau, absent de l'interface</td></tr>
+      <tr><td>Rebond sur la table (restitution, frottement)</td><td><span class="tag ok">modélisé</span></td><td>coefficients constants</td></tr>
+      <tr><td>Frottement de la table réglable</td><td><span class="tag ok">modélisé</span></td><td>curseur « Table »</td></tr>
+      <tr><td>Contact raquette : élasticité de l'éponge, adhérence, cisaillement</td><td><span class="tag ok">modélisé</span></td><td>pas à pas, 2 µs</td></tr>
+      <tr><td>Cinq types de revêtement</td><td><span class="tag part">estimés</span></td><td>profils non calibrés</td></tr>
+      <tr><td>Raquette adverse immobile</td><td><span class="tag ok">modélisé</span></td><td>mêmes revêtements</td></tr>
+      <tr><td>Filet</td><td><span class="tag part">simplifié</span></td><td>plan sans bande ni « let »</td></tr>
+      <tr><td>Impact au bord de la lame ou hors du centre</td><td><span class="tag no">non</span></td><td>contact toujours au centre</td></tr>
+      <tr><td>Rotation de la raquette pendant le choc, geste du poignet</td><td><span class="tag no">non</span></td><td>vitesse constante</td></tr>
+      <tr><td>Vibration du bois, épaisseur et dureté de la lame</td><td><span class="tag no">non</span></td><td>masse effective unique</td></tr>
+      <tr><td>Picots modélisés individuellement</td><td><span class="tag no">non</span></td><td>résumés par quatre nombres</td></tr>
+      <tr><td>Arête de la table</td><td><span class="tag no">non</span></td><td>—</td></tr>
+      <tr><td>Balle non parfaitement sphérique (couture), usure, colle</td><td><span class="tag no">non</span></td><td>—</td></tr>
+      <tr><td>Corps du joueur (taille, articulations, temps de réaction)</td><td><span class="tag no">non</span></td><td>prévu plus tard</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="limites">
+  <h2><span class="n">11</span>Limites des calculs</h2>
+  <p class="sub">À savoir avant de tirer une conclusion d'un résultat.</p>
+  <div class="box limit"><b>La limite principale</b><p><b>Aucun paramètre physique n'a été mesuré.</b> Les formules sont correctes dans leur principe et le code est vérifié (tests de cohérence : énergie, symétries, convergence, comparaison avec des cas analytiques), mais ces vérifications montrent que le calcul est <i>cohérent</i>, pas qu'il est <i>exact</i>. Aucune comparaison avec une mesure expérimentale n'a encore été faite.</p></div>
+  <p>Conséquence pratique : les <b>comportements relatifs</b> sont fiables (un revêtement plus adhérent crée plus de spin ; le topspin plonge ; plus de frottement de table ramène plus facilement une balle à backspin). Les <b>valeurs absolues</b> (« 42 tours/s », « rebond à 36 cm ») ne le sont pas encore.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Limite</th><th>Effet probable sur les résultats</th><th>Poids</th></tr></thead>
+    <tbody>
+      <tr><td>Paramètres de revêtement estimés (\(k_n,\alpha,\mu,k_t\))</td><td>spin et vitesse de sortie, ordre relatif des revêtements</td><td><span class="tag high">fort</span></td></tr>
+      <tr><td>Coefficients aérodynamiques (\(C_D\), \(C_L\), \(C_M\)) non mesurés</td><td>courbure et longueur des trajectoires</td><td><span class="tag high">fort</span></td></tr>
+      <tr><td>Rebond sur la table avec \(e\) et \(\mu\) constants, \(e_t=0\)</td><td>direction et vitesse après rebond, retour des balles à backspin</td><td><span class="tag high">fort</span></td></tr>
+      <tr><td>Contact au centre, raquette sans rotation ni vibration</td><td>spin et direction de coups réels, erreurs de centrage</td><td><span class="tag mid">moyen</span></td></tr>
+      <tr><td>Picots résumés par quatre nombres</td><td>comportement fin des picots longs et courts</td><td><span class="tag mid">moyen</span></td></tr>
+      <tr><td>Règles simplifiées, filet plan, pas d'arête</td><td>cas limites (let, balle sur l'arête)</td><td><span class="tag low">faible</span></td></tr>
+      <tr><td>Intégration numérique</td><td>erreur de 0,3 µm sur un rebond</td><td><span class="tag low">négligeable</span></td></tr>
+    </tbody>
+  </table></div>
+  <p>Deux points méritent d'être soulignés, car ils changent parfois les conclusions :</p>
+  <ul>
+    <li><b>Les services extrêmes</b> (face presque horizontale, balle qui revient) sont à la limite de ce que le modèle peut représenter. Ils fonctionnent dans le modèle ; ils ne sont pas validés sur le terrain, et leur sensibilité aux réglages (un quart seulement des réglages voisins fonctionnent encore) est elle-même un résultat de ce modèle non calibré.</li>
+    <li><b>Le spin dépend de la poussée sur la balle</b> (section 6.3). Si, en réalité, un joueur obtient plus de spin avec une même vitesse de balle, c'est que l'un des paramètres de contact est sous-estimé : c'est exactement ce que la calibration doit trancher.</li>
+  </ul>
+</section>
+
+<section id="precision">
+  <h2><span class="n">12</span>Comment gagner en précision</h2>
+  <p class="sub">Classé du plus rentable au plus ambitieux.</p>
+
+  <h3>1. Calibrer avec des mesures</h3>
+  <div class="box better"><b>Ce qui peut être mis en place</b>
+    <ul>
+      <li><b>Rebond sur la table</b> : lâcher et lancer des balles filmées au ralenti (un téléphone à 240 images/s ou plus suffit) sur une table graduée, pour mesurer \(e\) en fonction de la vitesse, \(\mu\) et l'élasticité tangentielle \(e_t\).</li>
+      <li><b>Vol libre</b> : filmer des trajectoires de balles marquées, avec et sans spin visible, pour ajuster \(C_D\), \(C_L(S)\) et \(C_M\).</li>
+      <li><b>Revêtements</b> : lancer une balle sur une raquette fixe sous plusieurs angles et vitesses, et ajuster \(k_n,\alpha,\mu,k_t\) par moindres carrés avec le simulateur lui-même (il est assez rapide pour des milliers d'essais).</li>
+      <li><b>Données existantes</b> : jeux de vidéos annotées de matchs, pour caler les trajectoires.</li>
+    </ul>
+    <p><b>Gain :</b> des valeurs absolues fiables, et des profils de revêtements justifiés.</p>
+  </div>
+
+  <h3>2. Enrichir les modèles physiques</h3>
+  <div class="box better"><b>Ce qui peut être mis en place</b>
+    <ul>
+      <li><b>Aérodynamique</b> : \(C_D\) et \(C_L\) en fonction du nombre de Reynolds et du spin, à partir de simulations d'écoulement ou de mesures en soufflerie.</li>
+      <li><b>Table</b> : \(e\) et \(\mu\) variables avec la vitesse et l'angle, élasticité tangentielle, impact sur l'arête, balle qui touche la bande du filet.</li>
+      <li><b>Contact</b> : frottement qui dépend de la vitesse de glissement, éponge viscoélastique (plusieurs temps de relaxation), picots modélisés comme de petites poutres qui fléchissent (pour les picots longs), vibration du bois.</li>
+      <li><b>Impact hors du centre</b> avec une raquette qui tourne (six degrés de liberté) : effets de bord, « sweet spot ».</li>
+    </ul>
+    <p><b>Gain :</b> des coups plus réalistes, surtout hors du cas idéal du contact au centre.</p>
+  </div>
+
+  <h3>3. Afficher l'incertitude</h3>
+  <div class="box better"><b>Ce qui peut être mis en place</b>
+    <ul>
+      <li><b>Analyse de sensibilité</b> : mesurer de combien un résultat (point de chute, spin) bouge quand un paramètre varie de 10 %.</li>
+      <li><b>Simulations en grand nombre</b> avec des paramètres tirés selon leurs incertitudes, pour afficher une zone de chute probable plutôt qu'un point, et un indicateur de confiance par service.</li>
+    </ul>
+    <p><b>Gain :</b> savoir quand un résultat est solide et quand il dépend d'un paramètre mal connu.</p>
+  </div>
+
+  <h3>4. Valider en continu</h3>
+  <div class="box better"><b>Ce qui peut être mis en place</b>
+    <ul>
+      <li>Une <b>suite de cas de référence mesurés</b>, rejouée à chaque modification du noyau, avec des tolérances écrites.</li>
+      <li>Des <b>règles complètes</b> : « let », geste de lancer, ouverture de la main.</li>
+      <li>Un <b>corps du joueur simplifié</b> (portée, vitesse maximale de raquette, temps de réaction) pour restreindre les coups réalisables, puis éventuellement un modèle biomécanique.</li>
+    </ul>
+    <p><b>Gain :</b> confiance durable, et des recommandations réalisables par un vrai joueur.</p>
+  </div>
+</section>
+
+<section id="lire">
+  <h2><span class="n">13</span>Pour aller plus loin</h2>
+  <p class="sub">Les idées sur lesquelles le modèle s'appuie.</p>
+  <ul>
+    <li><b>Effet Magnus et portance d'une sphère qui tourne</b> : Watts et Ferrer, <i>The lateral force on a spinning sphere: aerodynamics of a curveball</i>, American Journal of Physics (1987), pour la forme \(C_L=S/(2S+1)\).</li>
+    <li><b>Contact amorti</b> : Hunt et Crossley, <i>Coefficient of restitution interpreted as damping in vibroimpact</i>, Journal of Applied Mechanics (1975).</li>
+    <li><b>Schéma de Dormand et Prince</b> : <i>A family of embedded Runge-Kutta formulae</i>, Journal of Computational and Applied Mathematics (1980).</li>
+    <li><b>Rebond d'une balle avec spin et frottement</b> : les travaux de R. Cross sur les balles de tennis et de tennis de table.</li>
+    <li><b>Frottement avec ressort de cisaillement</b> : les modèles à « soies » (type LuGre, Canudas de Wit et coll.) dont s'inspire le plan de la face.</li>
+    <li><b>Règlement</b> : les lois du tennis de table (dimensions de la table, du filet, de la balle, règles du service).</li>
+  </ul>
+  <p>Ces références sont des pistes de lecture : les paramètres numériques de PingSim ne sont <b>pas</b> repris de ces travaux, ils restent à calibrer (section 12).</p>
+</section>
+
+</main>
+
+<footer>
+  Cette page décrit la version actuelle du code (dossier <code>core/</code>). Les calculateurs reproduisent le noyau C++ et ont été comparés à lui. Détails complémentaires : <code>docs/modeles-physiques.md</code>.
+  <br><a href="./">← Retour au Service Lab</a>
+</footer>
+
+</div>
+</body>
+</html>

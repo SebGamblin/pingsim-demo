@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PingSim — Service Lab</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three/three.module.min.js", "three/addons/": "./vendor/three/addons/" } }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <aside id="controls" aria-label="Réglages du service">
+      <header class="brand">
+        <h1>PingSim <span>Service Lab</span></h1>
+        <p>Réglez les deux raquettes directement sur la vue 3D : le service se recalcule en direct.</p>
+        <a class="doc-link" href="methodes.html" target="_blank" rel="noopener" title="Équations, composantes prises en compte, limites et pistes de précision (s'ouvre dans un nouvel onglet)">Méthodes de calcul, formules et limites ↗</a>
+      </header>
+      <section class="group" id="hands">
+        <h2>Joueurs</h2>
+        <div class="handrow"><span>Vous</span>
+          <div class="seg" id="seg-hand" role="group" aria-label="Votre main"><button type="button" data-v="R" class="on">Droitier</button><button type="button" data-v="L">Gaucher</button></div></div>
+        <div class="handrow"><span>Adversaire</span>
+          <div class="seg" id="seg-opp" role="group" aria-label="Main de l'adversaire"><button type="button" data-v="R" class="on">Droitier</button><button type="button" data-v="L">Gaucher</button></div></div>
+        <p class="note">« Gaucher » inverse le geste comme dans un miroir (position latérale, direction et face). La main de l'adversaire change seulement l'étiquette revers / coup droit.</p>
+      </section>
+      <section id="presets" class="group">
+        <h2>Services types</h2>
+        <select id="preset-select" class="dd" aria-label="Services types"></select>
+      </section>
+      <div id="sliders"></div>
+      <section class="group actions">
+        <button id="btn-reset" type="button">Réinitialiser</button>
+        <button id="btn-link" type="button">Copier le lien</button>
+      </section>
+      <p class="foot">Valeurs de revêtement et d'aérodynamique non calibrées : les comportements relatifs sont fiables, pas les valeurs absolues.</p>
+    </aside>
+
+    <main id="stage">
+      <canvas id="gl" aria-label="Vue 3D du service"></canvas>
+      <!-- tabs on the edges of the 3D view: fold / unfold the side panes ( [ and ] on the keyboard ) -->
+      <button id="toggle-left" class="edge edge-left" type="button" aria-controls="controls" aria-expanded="true" title="Replier le volet de gauche  ( [ )">‹</button>
+      <button id="toggle-right" class="edge edge-right" type="button" aria-controls="info" aria-expanded="true" title="Replier le volet de droite  ( ] )">›</button>
+      <div id="status" class="badge"></div>
+      <!-- One panel per racket, directly on the 3D view, one on each side: where it is, how fast it moves, its angles and its covering. Red = the racket that serves (left), blue = the racket that receives (right). -->
+      <section class="ovp ovp-left send" id="panel-send" aria-label="Raquette qui envoie">
+          <header class="ovp-head">
+            <h3><i class="swatch send"></i>Raquette qui envoie</h3>
+            <button class="ovp-toggle" type="button" aria-expanded="true" title="Replier / déplier">−</button>
+          </header>
+          <div class="ovp-body">
+            <div class="ov-sub">Où la balle est frappée</div>
+            <div class="ov-sliders" data-slot="send-pos"></div>
+            <div class="ov-sub">Force</div>
+            <div class="ov-sliders" data-slot="send-force"></div>
+            <div class="ov-sub">Angles</div>
+            <div class="ov-pads" data-slot="send-pads"></div>
+            <div class="ov-sub">Revêtement</div>
+            <select id="rubber-select" class="dd" aria-label="Revêtement de la raquette qui envoie"></select>
+            <div class="hint" id="rubber-note"></div>
+          </div>
+        </section>
+        <section class="ovp ovp-right recv off closed" id="panel-recv" aria-label="Raquette qui reçoit">
+          <header class="ovp-head">
+            <h3><i class="swatch recv"></i>Raquette qui reçoit</h3>
+            <label class="switch" title="Pose une raquette immobile en face, comme un mur"><input type="checkbox" id="chk-wall"><span>Activée</span></label>
+            <button class="ovp-toggle" type="button" aria-expanded="false" title="Replier / déplier">+</button>
+          </header>
+          <div class="ovp-body">
+            <div class="ov-sub">Où elle est posée</div>
+            <div class="ov-sliders" data-slot="recv-pos"></div>
+            <button id="btn-wall-place" class="wallbtn" type="button" title="Garde la distance choisie et cale la hauteur et le côté sur l'endroit où la balle passe">Caler sur la balle</button>
+            <div class="ov-sub">Angle</div>
+            <div class="ov-pads" data-slot="recv-pads"></div>
+            <div class="ov-sub">Revêtement</div>
+            <select id="wall-rubber-select" class="dd" aria-label="Revêtement de la raquette qui reçoit"></select>
+            <div class="hint" id="wall-rubber-note"></div>
+          </div>
+        </section>
+      <div id="toolbar">
+        <label class="ddl">Caméra
+          <select id="cam-select" class="dd">
+            <option value="three">3/4</option>
+            <option value="server">Derrière le serveur</option>
+            <option value="top">Vue de dessus</option>
+            <option value="side">De côté</option>
+            <option value="receiver">Derrière le receveur</option>
+          </select>
+        </label>
+        <label class="ddl">Lecture
+          <select id="speed-select" class="dd">
+            <option value="1">Vitesse réelle (1×)</option>
+            <option value="0.3" selected>Ralenti (0,3×)</option>
+            <option value="0.08">Très lent (0,08×)</option>
+          </select>
+        </label>
+        <button id="btn-play" type="button" title="Pause / lecture (barre d'espace)">Pause</button>
+        <button id="btn-replay" type="button" title="Rejouer (R)">Rejouer</button>
+        <button id="btn-pin" type="button" title="Garder la trajectoire actuelle en fantôme pour comparer">Épingler</button>
+        <a class="tool-link" href="methodes.html" target="_blank" rel="noopener" title="Équations, limites et pistes de précision">Méthodes ↗</a>
+        <label class="check"><input type="checkbox" id="chk-axis" checked> Axe du spin</label>
+      </div>
+    </main>
+
+    <aside id="info" aria-label="Résultats">
+      <section class="card" id="metrics"></section>
+      <section class="card">
+        <h2>Où tombe la balle <small>vue de dessus</small></h2>
+        <canvas id="minimap"></canvas>
+      </section>
+      <section class="card">
+        <h2>Contact raquette–balle <small id="contact-sub"></small></h2>
+        <canvas id="contact"></canvas>
+      </section>
+      <p class="foot" id="perf"></p>
+    </aside>
+  </div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
